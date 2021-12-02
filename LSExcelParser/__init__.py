@@ -1,11 +1,18 @@
 import xlrd
 import re
+import copy
 
 name = "LSExcelParser"
 
 
-class HalDevice:
+class HalBase:
+    def __init__(self):
+        self.used = 0
+
+
+class HalDevice(HalBase):
     def __init__(self, d_class=None, *args, **kwargs):
+        super(HalDevice, self).__init__()
         self._address_sub = re.compile(r"_")
 
         self.device_name = None
@@ -24,7 +31,9 @@ class HalDevice:
         self.device_class = d_class
 
     def add_device_class(self, device_class):
-        self.device_class = device_class
+        for reg in device_class:
+            reg.base_address = self.device_address_base
+        self.device_class = copy.deepcopy(device_class)
 
     def get_device_addr(self):
         return self.device_address_base
@@ -41,8 +50,9 @@ class HalDevice:
 
 
 # This class is lucency for user
-class HalDeviceClass:
+class HalDeviceClass(HalBase):
     def __init__(self, device):
+        super(HalDeviceClass, self).__init__()
         self.device_class_name = device
         self._regiser = []
         self._count = 0
@@ -56,9 +66,15 @@ class HalDeviceClass:
         # There have a temporary register, need to expand
         if self._temp_register:
             self._expand()
+            self._temp_register = None
         # If not find expand key word
         if not self._filter(reg):
             self._regiser.append(reg)
+
+    def is_end(self):
+        if self._temp_register:
+            self._expand()
+            self._temp_register = None
 
     def _filter(self, reg):
         rslt = self._find_indexs_pattern.search(reg.reg_name)
@@ -76,9 +92,10 @@ class HalDeviceClass:
         rslt = self._find_indexs_pattern.search(para["Name"])
         nickname = para["Name"][0: rslt.span()[0]]
         for num in range(self._indexs_num):
-            para["Name"] = nickname + str(num)
-            para["Address"] = num * 4
-            _register = Register(**para)
+            _temp_para = copy.deepcopy(para)
+            _temp_para["Name"] = nickname + str(num)
+            _temp_para["Address"] = hex(int(para["Address"], 16) + num * 4)
+            _register = Register(**_temp_para)
             for filed in self._temp_register.filed:
                 # Get the new filed name
                 filedname = self._locate_indexs_pattern.sub(str(num), filed.filed_name)
@@ -94,28 +111,36 @@ class HalDeviceClass:
 
     def __next__(self):
         if self._count >= len(self._regiser):
+            self._count = 0
             raise StopIteration
         temp = self._regiser[self._count]
         self._count += 1
         return temp
 
 
-class Register:
+class Register(HalBase):
     def __init__(self, *args, **kwargs):
-        self.reg_name = None
-        self.sub_addr = None
-        self.reset_val = None
-        self.description = None
+        super(Register, self).__init__()
+        self.reg_name = ""
+        self.sub_addr = ""
+        self.base_address = "0"
+        self.reset_val = ""
+        self.description = ""
         self.property = "NA"
         for item in kwargs.items():
             if item[0] == "Name":
                 self.reg_name = kwargs["Name"]
             elif item[0] == "Address":
-                self.sub_addr = int(str("0x") + str(kwargs["Address"]), 16)
+                try:
+                    self.sub_addr = int(str("0x") + str(kwargs["Address"]), 16)
+                except ValueError:
+                    self.sub_addr = int(kwargs["Address"], 16)
             elif item[0] == "Value":
                 self.reset_val = kwargs["Value"]
             elif item[0] == "Description":
                 self.description = kwargs["Description"]
+            elif item[0] == "Base_Address":
+                self.base_address = kwargs["Base_Address"]
         self.filed = []
         self._count = 0
 
@@ -128,6 +153,7 @@ class Register:
 
     def __next__(self):
         if self._count >= len(self.filed):
+            self._count = 0
             raise StopIteration
         temp = self.filed[self._count]
         self._count += 1
@@ -135,21 +161,22 @@ class Register:
 
     def __call__(self, *args, **kwargs):
         return {"Name": self.reg_name,
-                "Address": self.sub_addr,
+                "Address": hex(self.sub_addr + int(self.base_address, 16)),
                 "Value": self.reset_val,
                 "Description": self.description,
                 "Property": self.property,
                 }
 
 
-class Filed:
+class Filed(HalBase):
     def __init__(self, *args, **kwargs):
-        self.filed_name = None
-        self.property = None
-        self.description = None
-        self.reset_val = None
-        self.start_bit = None
-        self.end_bit = None
+        super(Filed, self).__init__()
+        self.filed_name = ""
+        self.property = ""
+        self.description = ""
+        self.reset_val = ""
+        self.start_bit = ""
+        self.end_bit = ""
         for item in kwargs.items():
             if item[0] == "Name":
                 self.filed_name = kwargs["Name"]
@@ -172,6 +199,7 @@ class Filed:
                 "Value": self.reset_val,
                 "Start": self.start_bit,
                 "End": self.end_bit,
+                "Field": "%s : %s" % (self.start_bit, self.end_bit),
                 "Description": self.description}
 
 
@@ -300,6 +328,7 @@ class PeripheralRegisterParser:
                     _filed = Filed(**_para)
                     _regiser.add_filed(_filed)
 
+            _device.is_end()
             self._deviceclass.append(_device)
 
         # Combine the device list and device class list
